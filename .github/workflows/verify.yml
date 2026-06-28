@@ -1,0 +1,108 @@
+name: verify
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - uses: open-policy-agent/setup-opa@v2
+        with:
+          version: "0.70.0"
+
+      - name: Install conftest
+        run: |
+          CONFTEST_VERSION=0.56.0
+          curl -sSfL \
+            "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" \
+            | sudo tar -xz -C /usr/local/bin conftest
+          conftest --version
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Install project
+        run: uv sync
+
+      - name: Bidirectional drift check
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          rego_files=(rego/*.rego)
+
+          if [ ${#rego_files[@]} -eq 0 ]; then
+            echo "rego/ is empty; nothing compiled yet. Skipping."
+            exit 0
+          fi
+
+          status=0
+
+          # Every rego/<id>.rego must have a matching policies/<id>/.
+          for f in "${rego_files[@]}"; do
+            id="$(basename "$f" .rego)"
+            for required in policy.md bad.tf good.tf; do
+              if [ ! -f "policies/$id/$required" ]; then
+                echo "DRIFT: $f has no matching policies/$id/$required"
+                status=1
+              fi
+            done
+          done
+
+          # Every policies/<id>/ must have a matching rego/<id>.rego.
+          for d in policies/*/; do
+            id="$(basename "$d")"
+            [ -f "$d/policy.md" ] || continue
+            if [ ! -f "rego/$id.rego" ]; then
+              echo "DRIFT: policies/$id has no matching rego/$id.rego (spec changed without recompiling?)"
+              status=1
+            fi
+          done
+
+          exit $status
+
+      - name: Verify each policy against its plan JSON
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          rego_files=(rego/*.rego)
+          [ ${#rego_files[@]} -eq 0 ] && exit 0
+
+          status=0
+          for f in "${rego_files[@]}"; do
+            id="$(basename "$f" .rego)"
+            echo "== $id =="
+
+            # Regenerate plan JSON from policies/<id>/{bad,good}.tf via the planner.
+            uv run tpcompile plan "$id"
+
+            bad_denials=$(conftest test ".compile-cache/$id-bad.json" \
+              --policy "$f" --namespace main --output json --no-color \
+              | jq '[.[].failures // [] | length] | add // 0')
+            good_denials=$(conftest test ".compile-cache/$id-good.json" \
+              --policy "$f" --namespace main --output json --no-color \
+              | jq '[.[].failures // [] | length] | add // 0')
+
+            echo "bad denials: $bad_denials, good denials: $good_denials"
+
+            if [ "$bad_denials" -lt 1 ]; then
+              echo "FAIL: $id did not deny its known-bad plan"
+              status=1
+            fi
+            if [ "$good_denials" -ne 0 ]; then
+              echo "FAIL: $id denied its known-good plan"
+              status=1
+            fi
+          done
+
+          exit $status

@@ -1,0 +1,32 @@
+[project]
+name = "tpcompile"
+version = "0.1.0"
+description = "Compile Terraform plan examples into Conftest/OPA Rego policies."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Boris Teplitsky" }]
+dependencies = [
+    "anthropic>=0.40",
+    "click>=8.1",
+]
+
+[project.scripts]
+tpcompile = "tpcompile.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tpcompile"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

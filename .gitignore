@@ -1,0 +1,18 @@
+# Compile cache: regenerated from policies/<id>/{bad,good}.tf on demand.
+.compile-cache/
+
+# Terraform working files (planner runs in temp dirs, but guard anyway).
+.terraform/
+*.tfstate
+*.tfstate.*
+plan.bin
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+.venv/
