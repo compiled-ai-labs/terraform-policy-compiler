@@ -7,7 +7,7 @@ runs in CI.
 
 For each `rego/<id>.rego`:
 
-1. Confirm a matching `policies/<id>/` exists with `policy.md`, `bad.tf`, `good.tf`
+1. Confirm a matching `policies/<id>/` exists with `source.md`, `bad.tf`, `good.tf`
    (and the reverse: every policy folder has a matching rego). If `rego/` is empty,
    there is nothing to verify — stop.
 2. Regenerate plan JSON with `uv run tpcompile plan <id>`.

@@ -37,15 +37,23 @@ def build(spec_dir: Path, rego_dir: Path, cache_dir: Path) -> None:
         raise click.ClickException(str(exc)) from exc
 
     failed = 0
+    skipped = 0
     for r in results:
-        if r.ok:
+        if r.skipped:
+            skipped += 1
+            click.echo(f"SKIP  {r.policy_id}  (unexpressible: {r.reason})")
+        elif r.ok:
             click.echo(f"PASS  {r.policy_id}  ({r.attempts} attempt(s))")
         else:
             failed += 1
             click.echo(f"FAIL  {r.policy_id}  ({r.attempts} attempt(s))")
             if r.failure:
                 click.echo(_indent(r.failure))
-    click.echo(f"{len(results) - failed}/{len(results)} policy(ies) compiled")
+    compiled = len(results) - failed - skipped
+    summary = f"{compiled}/{len(results)} policy(ies) compiled"
+    if skipped:
+        summary += f", {skipped} skipped (unexpressible)"
+    click.echo(summary)
     if failed:
         sys.exit(1)
 

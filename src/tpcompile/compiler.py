@@ -1,10 +1,18 @@
-"""The compile loop: spec folder in, gate-verified Rego out.
+"""The compile loop: prose standard in, gate-verified Rego out.
 
-For each policy folder the compiler produces plan JSON from bad.tf/good.tf,
-renders the prompt, calls the model, and runs the gates. On failure it feeds the
-exact validator error back into the next prompt and retries, up to three
-attempts. Rego is written only when every gate passes; a policy that never
-passes writes nothing and is reported as failed.
+The primary input is `source.md` — a prose excerpt from a security or governance
+standard. `bad.tf`/`good.tf` are demoted to validation fixtures: two concrete
+cases the compiled policy must get right. The policy must enforce the general
+standard in the prose, not merely deny the specific resource in the bad fixture.
+
+For each policy folder the compiler produces plan JSON from the fixtures, renders
+the prompt with the prose plus both plans, calls the model, and runs the gates. On
+failure it feeds the exact validator error back into the next prompt and retries,
+up to three attempts. Rego is written only when every gate passes.
+
+If the model judges the standard genuinely unexpressible against Terraform plan
+JSON, it returns the `UNEXPRESSIBLE:` sentinel; the compiler skips the gates,
+writes nothing, and records the reason as a skip rather than a hard failure.
 
 The model is a direct Anthropic SDK call. No model abstraction, no retry
 library. Model id comes from TPCOMPILE_MODEL, defaulting to the strongest
@@ -24,8 +32,9 @@ from . import planner, validator
 MODEL = os.environ.get("TPCOMPILE_MODEL", "claude-opus-4-8")
 MAX_TOKENS = 2048
 MAX_ATTEMPTS = 3
+UNEXPRESSIBLE = "UNEXPRESSIBLE:"
 
-_PROMPT_TEMPLATE = (Path(__file__).parent / "prompts" / "policy_from_spec.md").read_text(
+_PROMPT_TEMPLATE = (Path(__file__).parent / "prompts" / "policy_from_source.md").read_text(
     encoding="utf-8"
 )
 
@@ -37,13 +46,15 @@ class PolicyResult:
     attempts: int
     rego: str | None = None
     failure: str | None = None
+    skipped: bool = False
+    reason: str | None = None
 
 
-def _read_policy(policy_dir: Path) -> str:
-    return (policy_dir / "policy.md").read_text(encoding="utf-8").strip()
+def _read_source(policy_dir: Path) -> str:
+    return (policy_dir / "source.md").read_text(encoding="utf-8").strip()
 
 
-def _render_prompt(policy_md: str, bad_json: str, good_json: str, feedback: str | None) -> str:
+def _render_prompt(source: str, bad_json: str, good_json: str, feedback: str | None) -> str:
     if feedback:
         retry = (
             "## Previous attempt failed validation\n\n"
@@ -53,7 +64,7 @@ def _render_prompt(policy_md: str, bad_json: str, good_json: str, feedback: str 
     else:
         retry = ""
     return (
-        _PROMPT_TEMPLATE.replace("{{POLICY_MD}}", policy_md)
+        _PROMPT_TEMPLATE.replace("{{SOURCE}}", source)
         .replace("{{BAD_PLAN_JSON}}", bad_json)
         .replace("{{GOOD_PLAN_JSON}}", good_json)
         .replace("{{RETRY_FEEDBACK}}", retry)
@@ -70,6 +81,17 @@ def _strip_fences(text: str) -> str:
     return text.strip()
 
 
+def _unexpressible_reason(text: str) -> str | None:
+    """Return the reason if the model refused with the UNEXPRESSIBLE sentinel."""
+    stripped = text.strip()
+    if not stripped:
+        return None
+    first = stripped.splitlines()[0].strip()
+    if first.startswith(UNEXPRESSIBLE):
+        return first[len(UNEXPRESSIBLE) :].strip()
+    return None
+
+
 def _call_llm(client: anthropic.Anthropic, prompt: str) -> str:
     message = client.messages.create(
         model=MODEL,
@@ -84,7 +106,7 @@ def compile_policy(
     policy_dir: Path, provider_tf: Path, rego_dir: Path, cache_dir: Path
 ) -> PolicyResult:
     policy_id = policy_dir.name
-    policy_md = _read_policy(policy_dir)
+    source = _read_source(policy_dir)
 
     plan_paths = planner.plan_policy(policy_dir, provider_tf, cache_dir)
     bad_json = plan_paths["bad"].read_text(encoding="utf-8")
@@ -94,16 +116,21 @@ def compile_policy(
     feedback: str | None = None
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        prompt = _render_prompt(policy_md, bad_json, good_json, feedback)
-        rego = _call_llm(client, prompt)
-        gate = validator.run_gates(rego, plan_paths["bad"], plan_paths["good"])
+        prompt = _render_prompt(source, bad_json, good_json, feedback)
+        output = _call_llm(client, prompt)
+
+        reason = _unexpressible_reason(output)
+        if reason is not None:
+            return PolicyResult(policy_id, ok=False, attempts=attempt, skipped=True, reason=reason)
+
+        gate = validator.run_gates(output, plan_paths["bad"], plan_paths["good"])
         if gate.passed:
             rego_dir.mkdir(parents=True, exist_ok=True)
-            (rego_dir / f"{policy_id}.rego").write_text(rego.rstrip() + "\n", encoding="utf-8")
-            return PolicyResult(policy_id, True, attempt, rego=rego)
+            (rego_dir / f"{policy_id}.rego").write_text(output.rstrip() + "\n", encoding="utf-8")
+            return PolicyResult(policy_id, ok=True, attempts=attempt, rego=output)
         feedback = gate.feedback
 
-    return PolicyResult(policy_id, False, MAX_ATTEMPTS, failure=feedback)
+    return PolicyResult(policy_id, ok=False, attempts=MAX_ATTEMPTS, failure=feedback)
 
 
 def compile_all(
@@ -113,7 +140,7 @@ def compile_all(
     provider_tf = spec_dir / "provider.tf"
     results: list[PolicyResult] = []
     for policy_dir in sorted(p for p in spec_dir.iterdir() if p.is_dir()):
-        if not (policy_dir / "policy.md").is_file():
+        if not (policy_dir / "source.md").is_file():
             continue
         results.append(compile_policy(policy_dir, provider_tf, Path(rego_dir), cache_dir))
     return results

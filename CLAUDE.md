@@ -6,7 +6,7 @@ See the `compiled-ai` skill for the full paradigm and conventions. If the skill 
 
 ## This repo
 
-- **One-liner:** Compile Terraform plan examples into Conftest/OPA Rego policies.
+- **One-liner:** Compile written security/governance standards into Conftest/OPA Rego policies, gate-verified against Terraform plan fixtures.
 - **Spec folder:** `policies/`
 - **Compiler entry:** `uv run tpcompile build ./policies`
 - **Artifact folder:** `rego/`
@@ -14,7 +14,7 @@ See the `compiled-ai` skill for the full paradigm and conventions. If the skill 
 
 ## The pattern (always)
 
-1. **Spec** — markdown plus minimal worked examples (bad/good pairs, sample inputs). Source of truth. Human-maintained.
+1. **Spec** — each `policies/<id>/` holds `source.md` (a prose standard, the primary input) plus `bad.tf` and `good.tf` fixtures. Source of truth. Human-maintained.
 2. **Compiler** — `src/tpcompile/compiler.py`. Calls LLM with a templated prompt. Runs offline.
 3. **Validation gates** — `src/tpcompile/validator.py`. Non-negotiable. Parse, check, functional verdict on known plans.
 4. **Artifact** — committed file. Reviewable like any code. Versioned. Pinned by consumers.

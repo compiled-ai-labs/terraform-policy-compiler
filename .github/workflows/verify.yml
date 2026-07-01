@@ -51,7 +51,7 @@ jobs:
           # Every rego/<id>.rego must have a matching policies/<id>/.
           for f in "${rego_files[@]}"; do
             id="$(basename "$f" .rego)"
-            for required in policy.md bad.tf good.tf; do
+            for required in source.md bad.tf good.tf; do
               if [ ! -f "policies/$id/$required" ]; then
                 echo "DRIFT: $f has no matching policies/$id/$required"
                 status=1
@@ -62,7 +62,7 @@ jobs:
           # Every policies/<id>/ must have a matching rego/<id>.rego.
           for d in policies/*/; do
             id="$(basename "$d")"
-            [ -f "$d/policy.md" ] || continue
+            [ -f "$d/source.md" ] || continue
             if [ ! -f "rego/$id.rego" ]; then
               echo "DRIFT: policies/$id has no matching rego/$id.rego (spec changed without recompiling?)"
               status=1

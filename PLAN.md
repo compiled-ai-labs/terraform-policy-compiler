@@ -6,13 +6,13 @@ Same five-part shape as `semgrep-rule-compiler`. Different runtime tool, differe
 
 ## Scope (v0.1)
 
-Take a folder of policies (each with a description, a Terraform file that should violate the policy, and one that should comply), emit Rego policies that deny the bad plan and pass the good plan.
+Take a folder of policies. Each policy is a prose standard (`source.md`, an excerpt from a security or governance document) plus two Terraform fixtures: `bad.tf` that must be denied and `good.tf` that must pass. Emit one Rego policy per standard that enforces the standard's general intent and is gate-verified against its fixtures. The prose is the primary input; the fixtures are the gate.
 
 Out of scope for v0.1:
 
 - Sentinel, Kyverno, Checkov custom checks, or any non-OPA target
 - Cloud providers other than AWS
-- Multi-resource policies (each seed policy concerns one resource type)
+- Cross-plan or multi-module correlation (a policy sees one plan at a time; a standard may still name several resource types within that plan)
 - Plan analysis beyond `resource_changes` (no `prior_state`, no `output_changes`)
 - SaaS, API, or UI — CLI only
 - Model abstraction layer — direct Anthropic SDK call
@@ -40,25 +40,25 @@ terraform-policy-compiler/
 │       ├── planner.py                       terraform init+plan, returns JSON
 │       ├── validator.py                     opa+conftest invocation, gate checks
 │       └── prompts/
-│           └── policy_from_spec.md
+│           └── policy_from_source.md
 ├── policies/                                the spec
 │   ├── provider.tf                          shared fake-credentials AWS provider
-│   ├── 001-no-public-s3/
-│   │   ├── policy.md
+│   ├── 001-s3-public-access/
+│   │   ├── source.md                        prose standard, primary input
+│   │   ├── bad.tf                           fixture that must be denied
+│   │   └── good.tf                          fixture that must pass
+│   ├── 002-rds-encryption/
+│   │   ├── source.md
 │   │   ├── bad.tf
 │   │   └── good.tf
-│   ├── 002-rds-encryption-required/
-│   │   ├── policy.md
-│   │   ├── bad.tf
-│   │   └── good.tf
-│   └── 003-required-tags/
-│       ├── policy.md
+│   └── 003-resource-tagging/
+│       ├── source.md
 │       ├── bad.tf
 │       └── good.tf
 ├── rego/                                    the artifact
-│   ├── 001-no-public-s3.rego
-│   ├── 002-rds-encryption-required.rego
-│   └── 003-required-tags.rego
+│   ├── 001-s3-public-access.rego
+│   ├── 002-rds-encryption.rego
+│   └── 003-resource-tagging.rego
 └── tests/
     └── test_validator.py
 ```
@@ -92,13 +92,16 @@ The compiler combines `policies/provider.tf` with each policy's `bad.tf` or `goo
 
 ```
 for each policy_dir in policies/:
-    spec = read policy.md, bad.tf, good.tf
+    source = read source.md                                        prose standard, primary input
     bad_plan_json = run_terraform_plan(provider.tf + bad.tf)        cached
     good_plan_json = run_terraform_plan(provider.tf + good.tf)      cached
 
     for attempt in 1..3:
-        prompt = render(policy_from_spec.md, spec, bad_plan_json, good_plan_json, prior_failure=feedback)
+        prompt = render(policy_from_source.md, source, bad_plan_json, good_plan_json, prior_failure=feedback)
         rego_source = call_anthropic(prompt)
+
+        if rego_source is "UNEXPRESSIBLE: <reason>":
+            skip gates, write nothing, record reason as a skipped spec, break
 
         gate_1 = opa_parse(rego_source)                              valid Rego v1 syntax
         gate_2 = opa_check(rego_source)                              type/reference checks pass
@@ -128,22 +131,36 @@ The LLM does not get its output committed unless OPA and Conftest both agree the
 
 ## Prompt template
 
-Lives at `src/tpcompile/prompts/policy_from_spec.md`. Reviewable separately. Carries:
+Lives at `src/tpcompile/prompts/policy_from_source.md`. Reviewable separately. Carries:
 
 - Concise description of Rego v1 syntax with one canonical Conftest `deny` rule example for Terraform plans.
-- The policy description verbatim from `policy.md`.
+- The prose standard verbatim from `source.md`, labeled `SOURCE`, stated to be the standard whose general intent the policy must enforce.
 - The full `bad_plan.json` labeled `MUST_DENY`.
 - The full `good_plan.json` labeled `MUST_PASS`.
+- Instruction: enforce the general standard in `SOURCE`, covering every resource type and condition it names; use the two plans only to check edges. A policy that only denies the specific resource in `MUST_DENY` is wrong.
 - Constraint: output only Rego, `package main`, Rego v1 syntax, no commentary, no code fences.
+- Refusal path: if the standard genuinely cannot be enforced against `terraform show -json` output with Conftest (for example it needs runtime state Conftest never sees), output exactly `UNEXPRESSIBLE: <reason>` and nothing else.
 - On retry: prior attempt plus the exact validator error.
 
 ## Seed policies (v0.1)
 
-1. **001-no-public-s3** — `aws_s3_bucket` is non-compliant if it lacks a corresponding `aws_s3_bucket_public_access_block` with all four block flags set to `true`. `bad.tf` declares a bucket without the access block; `good.tf` declares both resources properly configured.
-2. **002-rds-encryption-required** — `aws_db_instance` must have `storage_encrypted = true`. `bad.tf` omits it; `good.tf` sets it.
-3. **003-required-tags** — every taggable resource must have both `owner` and `cost-center` tags. `bad.tf` declares a resource with only `Name`; `good.tf` includes all three.
+Each seed is a prose standard in `source.md` plus a `bad.tf`/`good.tf` fixture pair. The compiled Rego must enforce the standard's stated scope, not just deny the specific bad fixture.
 
-These are placeholders. Swap in real policies from HIPAA/Shamash/Merlin work when ready.
+1. **001-s3-public-access** — a cloud security standard: every `aws_s3_bucket` must have public access fully blocked via an `aws_s3_bucket_public_access_block` with all four settings `true`. `bad.tf` declares a bucket with no access block; `good.tf` declares both, fully configured.
+2. **002-rds-encryption** — an encryption-at-rest standard: every relational database (`aws_db_instance` and `aws_rds_cluster`) must set storage encryption to `true`. The fixture exercises `aws_db_instance` — `bad.tf` omits the setting, `good.tf` sets it — but the policy must cover the cluster type the standard also names.
+3. **003-resource-tagging** — a governance standard: every taggable resource must carry non-empty `owner` and `cost-center` tags. `bad.tf` declares a resource with only `Name`; `good.tf` includes both required tags.
+
+These are placeholders. Swap in real standards from HIPAA/Shamash/Merlin work when ready.
+
+## Why prose
+
+The earlier model — a short description plus a `bad.tf`/`good.tf` pair — had a hole: the policy could in principle be produced by a deterministic diff of the two plans, no model required. That undermines the paradigm. Making the prose standard the primary input closes it.
+
+- The prose is an authoritative, slow-moving standard. It is exactly the kind of input that cannot be parsed deterministically, and exactly the kind you must not hand to a model at runtime. Compiling it once, offline, behind gates, is the point.
+- The fixtures are an independent gate, not the specification. The policy must generalise from the standard — cover every resource type and condition it names — not overfit the two plans.
+- If a standard genuinely cannot be expressed against `terraform show -json` output with Conftest, the compiler records the `UNEXPRESSIBLE: <reason>` sentinel and skips the spec rather than forcing a wrong policy. A skip is not a hard failure.
+
+v0.1 limitation: the fixtures are not held out. A policy can pass both fixtures while under-enforcing the standard's wider scope, so human review of the compiled policy against its `source.md` is expected before commit.
 
 ## Locked decisions
 

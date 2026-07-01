@@ -1,28 +1,37 @@
 # terraform-policy-compiler
 
-Compile a plain-English Terraform policy into a Conftest/OPA Rego rule. An LLM
-drafts the rule at compile time from a bad/good plan pair; validation gates prove
-the rule denies the bad plan and passes the good one before it is committed. The
-runtime is Conftest against `terraform show -json` output — no model in the path.
+Compile a written standard — an excerpt from a security or governance policy —
+into a Conftest/OPA Rego rule. The prose is the primary input: an LLM reads it at
+compile time and drafts a rule that enforces it, while a bad/good Terraform plan
+pair serves as validation fixtures. The gates prove the rule denies the bad plan
+and passes the good one before it is committed. The runtime is Conftest against
+`terraform show -json` output — no model in the path.
 
 ## Why
 
-LLMs are good at drafting a Rego rule from an example and bad at being trusted
-with it. A rule that looks right but matches the wrong attribute, or denies
-nothing, or denies everything, is worse than no rule. So the model never gets its
-output committed on trust: every candidate is run against a known-bad Terraform
-plan (must deny) and a known-good plan (must pass), using the same Conftest the
-runtime uses. Only rules that clear the gates land in `rego/`. This is the
-Compiled AI pattern — an LLM authors the artifact at compile time, the runtime
-stays deterministic. See the article "Compiled AI: Engineering Deterministic LLM
-Systems" ([Medium](https://medium.com/@boristeplitsky)) and arXiv:2604.05150.
+A standard is written prose: "no S3 bucket may be public," with the scope and the
+exceptions spelled out in paragraphs. Turning that into an enforceable Rego rule
+is exactly the step that cannot be done deterministically — and it is the step you
+least want a model doing live in CI. So it happens once, at compile time, behind
+gates. The prose is the primary input; the model drafts a rule that enforces it;
+two Terraform plan fixtures — one that must be denied, one that must pass — prove
+the rule before it lands in `rego/`. The fixtures only check the edges: the rule
+must generalise to the standard's full scope, not overfit the one resource in the
+bad plan. The prose is authoritative and slow-moving, the fixtures are an
+independent check, and the committed artifact is plain Rego that Conftest runs with
+no model in the path. This is the Compiled AI pattern — an LLM authors the artifact
+at compile time, the runtime stays deterministic. See the article "Compiled AI:
+Engineering Deterministic LLM Systems"
+([Medium](https://medium.com/@boristeplitsky)) and arXiv:2604.05150.
 
 ## The five-part flow
 
-1. **Spec** — `policies/<id>/`: a `policy.md` plus a `bad.tf` that violates it and
-   a `good.tf` that complies. The shared provider lives in `policies/provider.tf`.
-2. **Compiler** — `src/tpcompile/compiler.py`: renders the prompt, calls the model,
-   runs the gates, retries up to three times with the validator error fed back in.
+1. **Spec** — `policies/<id>/`: a `source.md` prose standard (the primary input),
+   plus `bad.tf` and `good.tf` fixtures — one that must be denied, one that must
+   pass. The shared provider lives in `policies/provider.tf`.
+2. **Compiler** — `src/tpcompile/compiler.py`: renders the prompt from the prose and
+   both plans, calls the model, runs the gates, retries up to three times with the
+   validator error fed back in.
 3. **Validation gates** — `src/tpcompile/validator.py`: `opa parse`, `opa check`,
    then Conftest must deny the bad plan and pass the good plan.
 4. **Artifact** — `rego/<id>.rego`: the committed, reviewable policy.
@@ -42,24 +51,28 @@ and conftest but no API key.
 
 ## Worked example
 
-`policies/001-no-public-s3/` says every S3 bucket must have a matching
-`aws_s3_bucket_public_access_block` with all four block flags set to `true`.
-`bad.tf` declares a bucket with no access block; `good.tf` declares the bucket and
-a fully-configured block. The planner runs `terraform plan` on each and caches the
-JSON to `.compile-cache/`. The model drafts a Rego rule that denies a bucket whose
-plan has no fully-blocked access block. The gates confirm the rule fires on
-`bad.tf`'s plan and stays silent on `good.tf`'s. The result is written to
-`rego/001-no-public-s3.rego`.
+`policies/001-s3-public-access/source.md` is an excerpt of a cloud security
+standard: every S3 bucket must have public access fully blocked, meaning an
+`aws_s3_bucket_public_access_block` with all four settings set to `true`. `bad.tf`
+declares a bucket with no access block; `good.tf` declares the bucket and a
+fully-configured block. The planner runs `terraform plan` on each and caches the
+JSON to `.compile-cache/`. The model reads the standard and drafts a Rego rule that
+enforces it, using the two plans to check its edges. The gates confirm the rule
+denies `bad.tf`'s plan and passes `good.tf`'s. The result is written to
+`rego/001-s3-public-access.rego`.
 
 ## Limitations (v0.1)
 
-- AWS only, and the seed policies match single representative resource types
-  (S3 ACL, RDS instance, EC2 tags) rather than every taggable or encryptable kind.
+- AWS only. The seed standards cover S3 public access, RDS encryption, and
+  resource tagging.
 - Plans are generated with fake credentials and `-backend=false`; resources whose
   planned values depend on real API reads will not be fully populated.
 - One artifact per policy folder. No cross-resource or module-aware policies.
-- The gates prove behavior on the supplied bad/good plans only. A policy is as
-  good as its examples.
+- Fixtures are not held out. The gates prove the policy denies the bad plan and
+  passes the good one, but a policy can clear both while under-enforcing the
+  standard's wider scope. Human review of policy against standard is expected.
+- Some standards may be unexpressible against plan JSON (for example, controls that
+  need runtime state Conftest never sees). Those are skipped, not compiled.
 
 ## Roadmap
 

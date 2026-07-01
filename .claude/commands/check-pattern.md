@@ -5,8 +5,8 @@ description: Audit the repo for drift from the five-part Compiled AI shape.
 Check that this repo still follows the five-part shape and report any drift. Do
 not fix anything — report only.
 
-1. **Spec** — `policies/<id>/` each has `policy.md`, `bad.tf`, `good.tf`, and none
-   carry a provider block; `policies/provider.tf` exists.
+1. **Spec** — `policies/<id>/` each has `source.md` (the prose standard), `bad.tf`,
+   `good.tf`, and none carry a provider block; `policies/provider.tf` exists.
 2. **Compiler** — `src/tpcompile/compiler.py` runs offline, calls the model
    directly, and retries with gate feedback (max three attempts).
 3. **Gates** — `src/tpcompile/validator.py` enforces parse, check, deny-bad,
