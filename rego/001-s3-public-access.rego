@@ -2,60 +2,56 @@ package main
 
 import rego.v1
 
-# Collect all public access blocks that are fully enabled, keyed by the bucket
-# they protect (via reference in configuration).
-
-# Determine whether a given public access block resource has all four settings true.
-pab_fully_enabled(rc) if {
-	rc.change.after.block_public_acls == true
-	rc.change.after.ignore_public_acls == true
-	rc.change.after.block_public_policy == true
-	rc.change.after.restrict_public_buckets == true
+# Match a public access block to a bucket by its bucket reference.
+pab_matches_bucket(pab, bucket) if {
+	some ref in pab.change.after.bucket_refs
+	ref == bucket.address
 }
 
-# Set of bucket addresses that have a corresponding, fully-enabled public access block.
-protected_buckets contains bucket_addr if {
-	some cfg in input.configuration.root_module.resources
-	cfg.type == "aws_s3_bucket_public_access_block"
+# Collect bucket addresses referenced by each public access block via configuration.
+pab_bucket_refs(pab_address) := refs if {
+	some rc in input.configuration.root_module.resources
+	rc.type == "aws_s3_bucket_public_access_block"
+	rc.address == pab_address
+	refs := {b |
+		some r in rc.expressions.bucket.references
+		b := r
+	}
+}
 
-	# Find the matching resource_change for this public access block.
+# Determine whether a fully-enabled public access block exists for a given bucket.
+fully_enabled_pab_for_bucket(bucket_address) if {
 	some rc in input.resource_changes
 	rc.type == "aws_s3_bucket_public_access_block"
-	rc.address == cfg.address
-	pab_fully_enabled(rc)
-
-	# Extract the bucket reference from the config.
-	some ref in cfg.expressions.bucket.references
-	bucket_addr := ref
-}
-
-# Helper: does a config reference string point at a given bucket address?
-references_bucket(bucket_address) if {
-	some ref in protected_buckets
-	startswith(ref, bucket_address)
-}
-
-# A bucket is compliant if some fully-enabled public access block references it.
-bucket_protected(bucket_address) if {
-	references_bucket(bucket_address)
+	after := rc.change.after
+	after.block_public_acls == true
+	after.ignore_public_acls == true
+	after.block_public_policy == true
+	after.restrict_public_buckets == true
+	refs := pab_bucket_refs(rc.address)
+	some ref in refs
+	ref == bucket_address
 }
 
 deny contains msg if {
 	some rc in input.resource_changes
 	rc.type == "aws_s3_bucket"
-
-	# skip buckets being destroyed only
-	rc.change.after != null
-
-	not bucket_protected(rc.address)
-	msg := sprintf("%s has no corresponding fully-enabled aws_s3_bucket_public_access_block (all four public access settings must be true)", [rc.address])
+	not rc.change.actions == ["delete"]
+	not fully_enabled_pab_for_bucket(rc.address)
+	msg := sprintf("%s has no corresponding fully-enabled aws_s3_bucket_public_access_block (all four settings must be true)", [rc.address])
 }
 
-# Also deny any public access block that exists but is not fully enabled.
 deny contains msg if {
 	some rc in input.resource_changes
 	rc.type == "aws_s3_bucket_public_access_block"
-	rc.change.after != null
-	not pab_fully_enabled(rc)
-	msg := sprintf("%s does not set all four public access block settings to true", [rc.address])
+	after := rc.change.after
+	settings := {
+		"block_public_acls": after.block_public_acls,
+		"ignore_public_acls": after.ignore_public_acls,
+		"block_public_policy": after.block_public_policy,
+		"restrict_public_buckets": after.restrict_public_buckets,
+	}
+	some name, val in settings
+	val != true
+	msg := sprintf("%s does not set %s to true", [rc.address, name])
 }

@@ -2,63 +2,68 @@ package main
 
 import rego.v1
 
-# Resource types that do not support tags and should be exempt from this control.
-non_taggable := {
-	"aws_iam_role_policy_attachment",
+# Resource types that do not support tags and should be exempted.
+# Only taggable resources are in scope per the standard.
+non_taggable(t) if {
+	non_taggable_types[t]
+}
+
+non_taggable_types := {
 	"aws_iam_policy_attachment",
-	"aws_iam_role_policy",
-	"aws_iam_user_policy",
-	"aws_iam_group_policy",
+	"aws_iam_role_policy_attachment",
+	"aws_iam_user_policy_attachment",
+	"aws_iam_group_policy_attachment",
 	"aws_route",
 	"aws_route_table_association",
 	"aws_security_group_rule",
-	"aws_lb_listener_certificate",
+	"aws_vpc_security_group_ingress_rule",
+	"aws_vpc_security_group_egress_rule",
+	"aws_network_acl_rule",
+	"aws_iam_role_policy",
+	"aws_iam_user_policy",
+	"aws_iam_group_policy",
+	"aws_lb_target_group_attachment",
+	"aws_autoscaling_attachment",
 	"aws_volume_attachment",
-	"aws_network_interface_attachment",
-	"aws_iam_instance_profile",
+	"aws_ebs_snapshot_copy",
 }
 
-# A resource change is in scope if it is a managed resource being created or
-# updated, is not explicitly non-taggable, and its planned attributes carry a
-# "tags" field (which is how Terraform surfaces taggable resources).
+# Consider only managed resources being created or updated (not deleted).
 in_scope(rc) if {
 	rc.mode == "managed"
-	not non_taggable[rc.type]
+	startswith(rc.provider_name, "registry.terraform.io/hashicorp/aws")
+	not non_taggable(rc.type)
 	some action in rc.change.actions
 	action in {"create", "update"}
-	rc.change.after.tags != null
 }
 
-tag_value(rc, key) := v if {
-	v := rc.change.after.tags[key]
+tags(rc) := t if {
+	t := rc.change.after.tags
+	is_object(t)
 }
 
-missing_owner(rc) if {
-	not tag_value(rc, "owner")
+tags(rc) := {} if {
+	not is_object(rc.change.after.tags)
 }
 
-missing_owner(rc) if {
-	tag_value(rc, "owner") == ""
-}
-
-missing_cost_center(rc) if {
-	not tag_value(rc, "cost-center")
-}
-
-missing_cost_center(rc) if {
-	tag_value(rc, "cost-center") == ""
+valid_tag(t, key) if {
+	v := t[key]
+	is_string(v)
+	trim_space(v) != ""
 }
 
 deny contains msg if {
 	some rc in input.resource_changes
 	in_scope(rc)
-	missing_owner(rc)
+	t := tags(rc)
+	not valid_tag(t, "owner")
 	msg := sprintf("%s is missing a non-empty 'owner' tag", [rc.address])
 }
 
 deny contains msg if {
 	some rc in input.resource_changes
 	in_scope(rc)
-	missing_cost_center(rc)
+	t := tags(rc)
+	not valid_tag(t, "cost-center")
 	msg := sprintf("%s is missing a non-empty 'cost-center' tag", [rc.address])
 }
