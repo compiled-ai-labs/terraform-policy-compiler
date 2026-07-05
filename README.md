@@ -7,6 +7,55 @@ pair serves as validation fixtures. The gates prove the rule denies the bad plan
 and passes the good one before it is committed. The runtime is Conftest against
 `terraform show -json` output — no model in the path.
 
+## Quick start
+
+Verify the committed policies without an API key (opa + conftest only):
+
+```bash
+git clone https://github.com/compiled-ai-labs/terraform-policy-compiler
+cd terraform-policy-compiler
+uv sync
+uv run tpcompile test ./policies        # <-- replace with the real test command
+```
+
+<!-- PASTE REAL OUTPUT of the test run here, fenced. Must show at least:
+     one policy denying the bad plan, one passing the good plan. -->
+
+Compile a policy from prose (needs an Anthropic API key):
+
+```bash
+export ANTHROPIC_API_KEY=sk-...
+uv run tpcompile build ./policies
+```
+
+<!-- PASTE REAL OUTPUT of one successful build here. Ideally include one
+     retry: the gate failure message, then the pass — that is the pitch. -->
+
+## Prerequisites
+
+Tested on Ubuntu 24.04 with the versions below. Everything installs with
+copy-paste; nothing here assumes a pre-configured machine.
+
+```bash
+# uv (Python package manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# OPA  (vX.Y.Z)                          # <-- pin from your cold run
+curl -L -o opa https://openpolicyagent.org/downloads/latest/opa_linux_amd64_static
+chmod +x opa && sudo mv opa /usr/local/bin/
+
+# Conftest  (vX.Y.Z)                     # <-- pin from your cold run
+CONFTEST_VERSION=X.Y.Z
+curl -L "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" | tar xz conftest
+sudo mv conftest /usr/local/bin/
+
+# Terraform (vX.Y.Z) — only needed for compiling, not for verifying
+# https://developer.hashicorp.com/terraform/install
+```
+
+Python >= 3.X (managed by uv). No cloud credentials are needed: plans are
+generated with fake credentials and `-backend=false`.
+
 ## Why
 
 A standard is written prose: "no S3 bucket may be public," with the scope and the
@@ -20,9 +69,8 @@ must generalise to the standard's full scope, not overfit the one resource in th
 bad plan. The prose is authoritative and slow-moving, the fixtures are an
 independent check, and the committed artifact is plain Rego that Conftest runs with
 no model in the path. This is the Compiled AI pattern — an LLM authors the artifact
-at compile time, the runtime stays deterministic. See the article "Compiled AI:
-Engineering Deterministic LLM Systems"
-([Medium](https://medium.com/@boristeplitsky)) and arXiv:2604.05150.
+at compile time, the runtime stays deterministic. See the article
+["Compiled AI: Engineering Deterministic LLM Systems"](https://medium.com/itnext/compiled-ai-engineering-deterministic-llm-systems-f911558764d4).
 
 ## The five-part flow
 
@@ -38,17 +86,6 @@ Engineering Deterministic LLM Systems"
 5. **Runtime** — Conftest evaluating the artifact against `terraform show -json`
    output. Deterministic, auditable, no inference.
 
-## Try it
-
-```
-export ANTHROPIC_API_KEY=sk-...
-uv sync
-uv run tpcompile build ./policies
-```
-
-Compiling needs terraform, opa, and conftest on PATH. Running the tests needs opa
-and conftest but no API key.
-
 ## Worked example
 
 `policies/001-s3-public-access/source.md` is an excerpt of a cloud security
@@ -60,6 +97,14 @@ JSON to `.compile-cache/`. The model reads the standard and drafts a Rego rule t
 enforces it, using the two plans to check its edges. The gates confirm the rule
 denies `bad.tf`'s plan and passes `good.tf`'s. The result is written to
 `rego/001-s3-public-access.rego`.
+
+### When a draft fails the gates
+
+<!-- PASTE a real gate-rejection here: the model's first draft failing
+     (e.g. good plan denied, or opa check error), the error fed back,
+     and the retry passing. If no natural failure occurs, force one:
+     temporarily break a fixture and capture the refusal. This section
+     is the differentiator — a visitor must SEE the system refuse. -->
 
 ## Limitations (v0.1)
 
@@ -108,7 +153,7 @@ Three ways in:
 - **Build the next compiler** — pick another runtime (GitHub Actions, Dependabot,
   CODEOWNERS) and apply the same shape.
 
-Contact: compiledailabs@gmail.com.
+Contact: boristep@gmail.com.
 
 ## License
 
