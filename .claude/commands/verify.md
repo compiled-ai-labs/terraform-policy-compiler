@@ -3,15 +3,16 @@ description: Run the gates on committed rego/ artifacts. Read-only.
 ---
 
 Verify every committed artifact against its spec, the same checks `verify.yml`
-runs in CI.
+runs in CI:
 
-For each `rego/<id>.rego`:
+```
+uv run tpcompile verify ./policies
+```
 
-1. Confirm a matching `policies/<id>/` exists with `source.md`, `bad.tf`, `good.tf`
-   (and the reverse: every policy folder has a matching rego). If `rego/` is empty,
-   there is nothing to verify — stop.
-2. Regenerate plan JSON with `uv run tpcompile plan <id>`.
-3. Run `conftest test` on the bad plan (expect >= 1 denial) and the good plan
-   (expect 0), counting denials from `--output json`.
+This checks spec/artifact drift in both directions (every `rego/<id>.rego` has a
+matching `policies/<id>/` with `source.md`, `bad.tf`, `good.tf`, and vice versa),
+regenerates plan JSON from the fixtures, and re-runs the four gates on the
+committed Rego. Empty `rego/` is a clean exit. Needs terraform, opa, and conftest
+on PATH; no API key.
 
 Report pass/fail per policy. Do not modify any files.

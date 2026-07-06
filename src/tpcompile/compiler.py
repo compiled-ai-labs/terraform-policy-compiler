@@ -134,13 +134,19 @@ def compile_policy(
 
 
 def compile_all(
-    spec_dir: Path, rego_dir: Path, cache_dir: Path = planner.CACHE_DIR
+    spec_dir: Path,
+    rego_dir: Path,
+    cache_dir: Path = planner.CACHE_DIR,
+    only: set[str] | None = None,
 ) -> list[PolicyResult]:
+    """Compile policy folders under spec_dir. With `only`, compile just those ids."""
     spec_dir = Path(spec_dir)
     provider_tf = spec_dir / "provider.tf"
     results: list[PolicyResult] = []
     for policy_dir in sorted(p for p in spec_dir.iterdir() if p.is_dir()):
         if not (policy_dir / "source.md").is_file():
+            continue
+        if only is not None and policy_dir.name not in only:
             continue
         results.append(compile_policy(policy_dir, provider_tf, Path(rego_dir), cache_dir))
     return results

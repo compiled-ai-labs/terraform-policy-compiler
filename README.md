@@ -9,13 +9,14 @@ and passes the good one before it is committed. The runtime is Conftest against
 
 ## Quick start
 
-Verify the committed policies without an API key (opa + conftest only):
+Verify the committed policies — no API key needed, but terraform, opa, and
+conftest must be on PATH (plan JSON is regenerated from the fixtures):
 
 ```bash
 git clone https://github.com/compiled-ai-labs/terraform-policy-compiler
 cd terraform-policy-compiler
 uv sync
-uv run tpcompile test ./policies        # <-- replace with the real test command
+uv run tpcompile verify ./policies
 ```
 
 <!-- PASTE REAL OUTPUT of the test run here, fenced. Must show at least:
@@ -25,7 +26,8 @@ Compile a policy from prose (needs an Anthropic API key):
 
 ```bash
 export ANTHROPIC_API_KEY=sk-...
-uv run tpcompile build ./policies
+uv run tpcompile build ./policies                        # all policies
+uv run tpcompile build ./policies 001-s3-public-access   # just one
 ```
 
 <!-- PASTE REAL OUTPUT of one successful build here. Ideally include one
@@ -40,20 +42,23 @@ copy-paste; nothing here assumes a pre-configured machine.
 # uv (Python package manager)
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# OPA  (vX.Y.Z)                          # <-- pin from your cold run
-curl -L -o opa https://openpolicyagent.org/downloads/latest/opa_linux_amd64_static
+# OPA (same version CI uses)
+curl -L -o opa https://openpolicyagent.org/downloads/v0.70.0/opa_linux_amd64_static
 chmod +x opa && sudo mv opa /usr/local/bin/
 
-# Conftest  (vX.Y.Z)                     # <-- pin from your cold run
-CONFTEST_VERSION=X.Y.Z
+# Conftest (same version CI uses)
+CONFTEST_VERSION=0.56.0
 curl -L "https://github.com/open-policy-agent/conftest/releases/download/v${CONFTEST_VERSION}/conftest_${CONFTEST_VERSION}_Linux_x86_64.tar.gz" | tar xz conftest
 sudo mv conftest /usr/local/bin/
 
-# Terraform (vX.Y.Z) — only needed for compiling, not for verifying
-# https://developer.hashicorp.com/terraform/install
+# Terraform — needed for both compiling and verifying (plans are regenerated)
+TERRAFORM_VERSION=1.9.8
+curl -LO "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
+unzip -o "terraform_${TERRAFORM_VERSION}_linux_amd64.zip" terraform
+sudo mv terraform /usr/local/bin/ && rm "terraform_${TERRAFORM_VERSION}_linux_amd64.zip"
 ```
 
-Python >= 3.X (managed by uv). No cloud credentials are needed: plans are
+Python >= 3.11 (managed by uv). No cloud credentials are needed: plans are
 generated with fake credentials and `-backend=false`.
 
 ## Why
@@ -105,6 +110,31 @@ denies `bad.tf`'s plan and passes `good.tf`'s. The result is written to
      and the retry passing. If no natural failure occurs, force one:
      temporarily break a fixture and capture the refusal. This section
      is the differentiator — a visitor must SEE the system refuse. -->
+
+## Add a policy
+
+1. Create `policies/<id>/` where `<id>` is the next unused three-digit number plus
+   a short kebab-case name (e.g. `004-ebs-encryption`). The folder name becomes
+   the artifact name: `rego/<id>.rego`.
+2. Write three files:
+   - `source.md` — the prose standard, the primary input. State the control in
+     general terms: which resource types it covers, what counts as a violation,
+     any exceptions.
+   - `bad.tf` — a minimal fixture that violates the standard. Must be denied.
+   - `good.tf` — a minimal fixture that complies. Must pass.
+
+   Do not put a `provider` or `terraform` block in the fixtures. The shared
+   `policies/provider.tf` is combined with each fixture at plan time; a second
+   provider block fails the plan with a duplicate-configuration error.
+3. Compile just the new policy: `uv run tpcompile build ./policies <id>`.
+4. Review the generated `rego/<id>.rego` against `source.md` — the gates prove the
+   fixtures, not the standard's full scope — then run
+   `uv run tpcompile verify ./policies`.
+
+If the standard cannot be enforced against plan JSON (for example, it needs
+runtime state Conftest never sees), the build reports
+`SKIP <id> (unexpressible: <reason>)` and writes nothing. That is a judgment to
+review, not an error.
 
 ## Limitations (v0.1)
 
